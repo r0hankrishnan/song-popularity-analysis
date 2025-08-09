@@ -1,0 +1,59 @@
+---
+title: "Data Preprocessing"
+author: "Rohan Krishnan"
+date: "2024-05-07"
+output: html_document
+---
+
+*From the `exploratory-analysis` document, we found that track_genre will likely be a strong predictor of song popularity. We also found some small data issues that we need to correct before splitting our sample and building our models. Namely, we need to remove the obs with `time_signature`* = 0 and 2, remove 3 variables, and convert several variables into factors.
+
+## Load data
+
+```{r}
+#Load necessary libraries
+library(tidyverse)
+
+#Load data
+data <- read.csv("~/Documents/GitHub/song-popularity/data/train.csv")
+```
+
+## Data cleaning
+
+```{r}
+#Remove track and album name, filter out 0 and 2 time_signature obs, convert columns to factors
+newdata <- data %>%
+  select(-track_name, -album_name) %>%
+  filter(time_signature != 0, time_signature != 2) %>%
+  mutate(explicit = as.factor(explicit),
+         key = as.factor(key),
+         time_signature = as.factor(time_signature),
+         track_genre = as.factor(track_genre))
+
+#Check that columns are factors
+for (i in 1:ncol(newdata)){
+  print(paste0(colnames(newdata[i]),": ", is.factor(newdata[,i])))
+}
+
+#Save overall preprocessed data to data folder
+write_csv(newdata, file = "~/Documents/GitHub/song-popularity/data/clean_data.csv")
+```
+
+## Create model training and testing sets and save to data folder
+
+```{r}
+#Split newdata into train and test sets
+set.seed(100)
+train <- newdata %>%
+  sample_frac(.70)
+
+test <- newdata %>% anti_join(train, by = "id")
+
+#Remove id columns
+train$id <- NULL
+test$id <- NULL
+ncol(train);ncol(test)
+
+#Save as csv files to data folder 
+write_csv(x = train, file = "~/Documents/GitHub/song-popularity/data/pre_proc_train.csv")
+write_csv(x = test, file = "~/Documents/GitHub/song-popularity/data/pre_proc_test.csv")
+```

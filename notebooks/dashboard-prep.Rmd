@@ -1,0 +1,119 @@
+---
+title: "ShinyAppPrep"
+author: "Rohan Krishnan"
+date: "2024-06-12"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#data
+```{r}
+library(tidyverse)
+library(randomForest)
+library(kableExtra)
+songs <- read.csv("~/Documents/GitHub/song-popularity/data/clean_data.csv")
+songs %>% glimpse()
+songs<- songs %>% select(-id)
+
+unique(songs$mode)
+```
+
+#model
+```{r}
+set.seed(100)
+#Create random forest
+rf.mod <- randomForest(popularity ~ ., data = songs,
+                       mtry = 5, ntree = 501, importance = TRUE)
+
+saveRDS(rf.mod, "~/Documents/GitHub/song-popularity/song-popularity-dashboard/randomforest.RDS")
+
+```
+
+#generate dummy test data
+```{r}
+testData <- data.frame(
+      duration_ms = 50000,
+      explicit = TRUE,
+      danceability = 0.25,
+      energy = 0.25,
+      key = 3,
+      loudness = -50,
+      mode = 1,
+      speechiness = 0.25,
+      acousticness = 0.25,
+      instrumentalness = 0.25,
+      liveness = 0.25,
+      valence = 0.25,
+      tempo = 153,
+      time_signature = 4,
+      track_genre = "pop")
+
+popularity <- predict(rf.mod, testData)
+
+dData <- cbind(popularity, testData)
+```
+
+#create kable
+```{r}
+dData %>%
+  gather(key = "key", value = "value", popularity:track_genre) %>%
+  mutate(key = str_replace(key,"_", " ") %>% str_to_title()) %>%
+  kable(digits = 2, format.args = list(big.mark = ",")) 
+  
+
+
+dData %>%
+  gather(key = "key", value = "value", popularity:track_genre) %>%
+  mutate(key = str_replace(key,"_", " ") %>% str_to_title()) %>%
+  datatable(options = list(
+    pageLength = 16
+  ))
+
+dData %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column() %>%
+  rename(Attribute = "rowname",
+         Value = "1") %>%
+  kable() 
+```
+
+#combined data graph (v2)
+```{r}
+library(scales)
+library(plotly)
+graphData <- rbind(
+  songs %>% mutate(isTest = FALSE),
+  dData %>% mutate(isTest = TRUE)
+  )
+tail(graphData, 5)
+
+graphData$label <- paste("Popularity: ", round(graphData$popularity,2), "<br>Duration(ms): ", graphData$duration_ms,
+                         "<br>Explicit: ", graphData$explicit)
+
+plot <- graphData %>%
+      ggplot(aes(x = duration_ms, y = popularity, color = isTest, text = label)) + 
+      geom_point() + 
+      scale_x_continuous(labels = label_number()) + 
+      labs(x = "Duration (ms)", y = "Popularity",
+           color = "New Data") +
+      scale_color_manual(values = c("black", "red"))
+
+ggplotly(plot, tooltip = "text")
+```
+
+#combined data graph (v1)
+```{r}
+library(scales)
+
+songs %>%
+      ggplot(aes(x = duration_ms, y = popularity)) + 
+      geom_point() + 
+      geom_point(aes(x = dData$duration_ms, y = dData$popularity), color = "red") + 
+      scale_x_continuous(labels = label_number()) + 
+      labs(x = "Duration (ms)", y = "Popularity") 
+```
+

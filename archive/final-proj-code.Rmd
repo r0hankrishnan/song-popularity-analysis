@@ -1,0 +1,419 @@
+---
+title: "Final Project Code"
+author: "Rohan Krishnan"
+date: "2024-04-08"
+output: html_document
+---
+
+## Load Data & Basic EDA
+
+```{r, message = FALSE}
+#Load dplyr
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+
+#Load data
+data <- read.csv("~/Downloads/train.csv")
+
+#Quick look at data
+head(data, 5)
+
+#List variable type for each column
+for (i in 1:ncol(data)){
+  print(paste0(colnames(data[i]),": ", typeof(data[,i])))
+}
+
+#Count missing values for each column
+for (i in 1:ncol(data)){
+  print(paste0(colnames(data[i]), ": ", sum(is.na(data[,i]))))
+}
+
+#Count unique values for each column
+for (i in colnames(data)){
+  x = n_distinct(data[i])
+  print(paste(i," distinct values: ", x))
+}
+```
+
+## Visualizations
+
+```{r, message = FALSE}
+#Compare popularity across different groups
+data %>%
+  ggplot(aes(x = popularity, color = track_genre)) +
+  geom_boxplot() + 
+  facet_wrap(~track_genre)
+
+data %>%
+  ggplot(aes(x = popularity, color = track_genre)) +
+  geom_density() + 
+  facet_wrap(~track_genre)
+
+data %>%
+  ggplot(aes(x = popularity, color = track_genre)) +
+  geom_histogram(stat = "density") + 
+  facet_wrap(~track_genre)
+
+data %>%
+  ggplot(aes(x = popularity, color = time_signature)) + 
+  geom_boxplot() + 
+  facet_wrap(~time_signature, scales = "free", nrow = 3)
+
+data %>%
+  ggplot(aes(x = popularity, color = time_signature)) + 
+  geom_density() + 
+  facet_wrap(~time_signature)
+
+data %>%
+  ggplot(aes(x = time_signature, y = popularity)) +
+  geom_point() #Should remove time_signature == 0 and 2
+
+data %>%
+  ggplot(aes(x = popularity, color = explicit)) +
+  geom_density() + 
+  facet_wrap(~explicit)
+
+data %>%
+  ggplot(aes(x = popularity, color = explicit)) +
+  geom_boxplot() + 
+  facet_wrap
+
+#Generate bar chart of popularities
+data %>%
+  ggplot(aes(x = popularity)) + 
+  geom_histogram(stat = "bin")
+
+#Generate density plots
+data %>%
+  ggplot(aes(x = popularity)) + 
+  geom_density() + geom_vline(aes(xintercept = mean(popularity)),
+                              color = "blue", linetype = "dashed", size = 1)
+
+
+numericData <- data %>%
+  select(popularity, duration_ms, danceability, energy, key, 
+         loudness, speechiness, acousticness, instrumentalness,
+         liveness, valence, tempo)
+
+#Generate pairs plot
+library(GGally)
+data %>%
+  select(-id, -album_name, -track_name, -track_genre) %>%
+  pairs()
+
+#Examine seemingly colinear relationships
+data %>%
+  ggplot(aes(x = energy, y = loudness)) + 
+  geom_point()
+
+#Generate boxplots
+LnumericData <- numericData %>% 
+  pivot_longer(cols = 1:12)
+
+LnumericData %>%
+  ggplot(aes(x = value)) + 
+  geom_boxplot() + 
+  facet_wrap(~name, scales = "free", nrow = 4)
+
+LnumericData %>%
+  ggplot(aes(x = value)) + 
+  geom_density() + 
+  facet_wrap(~name, scales = "free", nrow = 4)
+```
+
+## Splitting Data
+
+```{r}
+#Remove lower obs time_sig
+newdata <- data %>%
+  filter(time_signature != 0, time_signature != 2)
+
+#Remove unneccesary columns and convert time_sig and genre to factors
+colnames(data)
+head(data$key)
+
+trimData <- newdata %>%
+  select(-album_name, -track_name)
+
+trimData <- trimData %>%
+  mutate(explicit = as.factor(explicit),
+         key = as.factor(key),
+         time_signature = as.factor(time_signature),
+         track_genre = as.factor(track_genre))
+
+#Split train.csv into train and test sets
+set.seed(100)
+train <- trimData %>%
+  sample_frac(.70)
+
+test <- trimData %>% anti_join(train, by = "id")
+
+train$id <- NULL
+test$id <- NULL
+ncol(train);ncol(test)
+
+#Create mse list
+mse <- list()
+
+```
+
+## Multiple Linear Regression
+
+```{r}
+#Create model
+mlr.mod <- lm(popularity ~ ., data = train)
+
+#Calculate MSE on test set
+mlr.pred <- predict(mlr.mod, test)
+mse.mlr <- mean((test$popularity - mlr.pred)^2)
+mse[1] <- mse.mlr
+
+range(train$popularity)
+
+summary(mlr.mod)
+```
+
+## Best Subset Selection
+
+```{r}
+set.seed(100)
+#Load libraries
+library(leaps)
+
+#Train model
+bss.mod <- regsubsets(popularity ~., data = train, nvmax = ncol(train))
+bss.tmse <- summary(bss.mod)$rss / nrow(train)
+plot(bss.tmse, ylab = "MSE", type = "o")
+
+predict.regsubsets <- function(object, newdata, id, ...){
+  form <- as.formula(object$call[[2]])
+  mat <- model.matrix(form, newdata)
+  coefi <- coef(object, id = id)
+  xvars <- names(coefi)
+  mat[,xvars] %*% coefi
+}
+
+testbss.mse <- sapply(1:16, function(i) mean((test$popularity - predict.regsubsets(bss.mod, test, i))^2))
+
+plot(testbss.mse, ylab = "MSE", type = "o", pch = 19)
+
+which.min(testbss.mse)
+coef(bss.mod, id = 1)
+
+#Train selected model
+selectedMLR.mod <- lm(popularity ~ track_genre, data = train)
+
+#Calculate MSE on test set
+selectedMLR.pred <- predict(selectedMLR.mod, test)
+mse.selectMLR <- mean((test$popularity - selectedMLR.pred)^2)
+mse[2] <- mse.selectMLR
+```
+
+## LASSO
+
+```{r}
+set.seed(100)
+#Load library
+library(glmnet)
+#Create x and y training/testing objects
+x.train <- model.matrix(popularity ~ ., train)[,-1]
+y.train <- train %>%
+select(popularity) %>%
+unlist() %>%
+as.numeric()
+
+x.test <- model.matrix(popularity ~ ., test)[,-1]
+y.test <- test %>%
+select(popularity) %>%
+unlist() %>%
+as.numeric()
+
+#Fit lasso CV regression on training data and recover optimal lambda
+lasso.mod <- cv.glmnet(x.train, y.train, alpha = 1)
+
+
+best.lambda <- lasso.mod$lambda.min; best.lambda
+
+
+#Report test error
+lasso.pred <- predict(lasso.mod, s = best.lambda, newx = x.test)
+mse.lasso <- mean((lasso.pred - y.test)^2)
+
+mse[3] <- mse.lasso
+
+coef(lasso.mod, s = best.lambda)
+
+#Recover chosen variables and create new train set
+tmp_coef = coef(lasso.mod, s=best.lambda)
+
+varnames <- tmp_coef@Dimnames[[1]][tmp_coef@i][-1]; varnames
+
+varnames <- c("duration_ms", "explicit", "danceability", "energy", "key", "loudness",
+              "mode", "liveness", "valence", "time_signature")
+
+new.train <- train[,varnames]
+new.train$popularity <- train$popularity
+
+#Fit after Lasso OLS model
+afterLassoOLS.mod <- lm(popularity ~ ., new.train)
+
+#Record test error
+aLassoOLS.pred <- predict(afterLassoOLS.mod, test)
+aLassoOLS.mse <- mean((aLassoOLS.pred - test$popularity)^2); aLassoOLS.mse
+
+mse[4] <- aLassoOLS.mse
+```
+
+## Ridge
+
+```{r}
+set.seed(100)
+#Create ridge regression (using x/y train/test from above)
+ridge.mod <- cv.glmnet(x.train, y.train, alpha = 0)
+best.lambda <- ridge.mod$lambda.min; best.lambda
+
+#Calculate test MSE
+ridge.pred <- predict(ridge.mod, s = best.lambda, newx = x.test)
+ridge.mse <- mean((ridge.pred - y.test)^2)
+
+mse[5] <- ridge.mse
+
+
+best.ridge <- glmnet(x.train, y.train, alpha = 0, lambda = best.lambda)
+coef(best.ridge)
+```
+
+## Bagged Random Forest
+
+```{r}
+set.seed(100)
+#Load library
+library(randomForest)
+
+#Create bagged RF
+baggedRF.mod <- randomForest(popularity ~ ., data = train,
+                             mtry = 15, ntree = 501, importance = TRUE)
+
+baggedRF.pred <- predict(baggedRF.mod, test)
+baggedRF.mse <- mean((baggedRF.pred - test$popularity)^2)
+
+mse[6] <- baggedRF.mse
+
+varImpPlot(baggedRF.mod)
+```
+
+## Random Forest
+
+```{r}
+set.seed(100)
+#Create random forest
+rf.mod <- randomForest(popularity ~ ., data = train,
+                       mtry = 5, ntree = 501, importance = TRUE)
+
+rf.pred <- predict(rf.mod, test)
+rf.mse <- mean((rf.pred - test$popularity)^2)
+
+mse[7] <- rf.mse
+
+varImpPlot(rf.mod)
+
+```
+
+## BART
+
+```{r}
+set.seed(100)
+library(BART)
+
+bart.mod <- gbart(train[,2:16], train[,1],
+                  x.test = test[,2:16])
+bart.pred <- bart.mod$yhat.test.mean
+bart.mse <- mean((bart.pred - test$popularity)^2)
+
+mse[8] <- bart.mse
+
+```
+
+## Boosted Tree
+
+```{r}
+set.seed(100)
+library(gbm)
+
+boost.mod <- gbm(popularity ~ ., data = train,
+distribution = "gaussian", n.trees = 5001, interaction.depth = 4)
+
+boost.pred <- predict(boost.mod, newdata = test, n.trees = 5000)
+boost.mse <- mean((boost.pred - test$popularity)^2)
+
+mse[9] <- boost.mse
+```
+
+## Predictions
+
+```{r}
+#Load data
+pred.df <- read.csv("~/Downloads/test.csv")
+
+unique(pred.df$track_genre)
+
+#Clean data
+cleanPred.df <- pred.df %>%
+  select(-album_name, -track_name, -id) %>%
+  mutate(explicit = as.factor(explicit),
+         key = as.factor(key),
+         time_signature = as.factor(time_signature),
+         track_genre = as.factor(track_genre))
+
+#Generate predictions
+final.df <- newdata %>%
+  select(-id, -album_name, -track_name) %>%
+  mutate(explicit = as.factor(explicit),
+         key = as.factor(key),
+         time_signature = as.factor(time_signature),
+         track_genre = as.factor(track_genre))
+
+final.rf <- randomForest(popularity ~., data = final.df,
+                         mtry = 5, ntree = 501)
+final.predictions <- predict(final.rf, cleanPred.df)
+
+testing.prediction <- as.data.frame(cbind(pred.df$id, final.predictions))
+testing.prediction$id <- testing.prediction$V1
+testing.prediction$popularity <- as.numeric(testing.prediction$final.predictions)
+
+testing.prediction$V1 <- NULL
+testing.prediction$final.predictions <- NULL
+
+#write to csv
+write.csv(testing.prediction, 
+          "~/Downloads/testing_predictions_krishnan_rohan_rok57.csv",
+          row.names = FALSE)
+```
+
+## MSE Graph
+
+```{r}
+mse <- as.data.frame(mse)
+
+colnames(mse) <- c("MLR", "BSS", "Lasso", 
+                   "After Lasso OLS", "Ridge", "Bagged RF",
+                   "RF", "BART", "Boosted RF")
+
+mse.long <- mse %>%
+  pivot_longer(cols = 1:9)
+
+mse.long$value <- round(mse.long$value, 2)
+
+                        
+mse.long %>%
+  ggplot(aes(x = name, y = value)) + 
+  geom_bar(stat = "identity", width = 0.40) + 
+  geom_text(aes(label = value), position = position_dodge(width = 0.90), vjust = -1,
+            cex = 2) +
+  labs(title = expression(bold(MSE~Performance~Across~Models)),
+       subtitle = expression(italic(Lower~MSE~Corresponds~To~Better~Performance)),
+       x = "Model",  y = "MSE") +
+  theme_bw() +
+  theme(axis.text.x = element_text(size = 7))
+```

@@ -1,0 +1,196 @@
+---
+title: "tree-models"
+author: "Rohan Krishnan"
+date: "2024-05-16"
+output: html_document
+---
+
+```{r}
+#Load data
+train <- read.csv("~/Documents/GitHub/song-popularity/data/pre_proc_train.csv")
+test <- read.csv("~/Documents/GitHub/song-popularity/data/pre_proc_test.csv")
+
+#Convert explicit, key, time_signature, and track_genre to factor variables
+train <- train %>%
+  mutate(explicit = as.factor(explicit),
+         key = as.factor(key),
+         time_signature = as.factor(time_signature),
+         track_genre = as.factor(track_genre))
+
+test <- test %>%
+    mutate(explicit = as.factor(explicit),
+         key = as.factor(key),
+         time_signature = as.factor(time_signature),
+         track_genre = as.factor(track_genre))
+```
+
+## Tree-Based Models
+
+## Boosted Tree
+
+```{r}
+set.seed(100)
+library(gbm)
+
+boost.mod <- gbm(popularity ~ ., data = train,
+distribution = "gaussian", n.trees = 5001, interaction.depth = 4)
+
+boost.pred <- predict(boost.mod, newdata = test, n.trees = 5000)
+boost.rmse <- sqrt(mean((boost.pred - test$popularity)^2))
+```
+
+## Bagged RF
+
+```{r}
+set.seed(100)
+
+#Load library
+library(randomForest)
+
+#Create bagged RF
+baggedRF.mod <- randomForest(popularity ~ ., data = train,
+                             mtry = 15, ntree = 501, importance = TRUE)
+
+baggedRF.pred <- predict(baggedRF.mod, test)
+baggedRF.rmse <- sqrt(mean((baggedRF.pred - test$popularity)^2))
+
+varImpPlot(baggedRF.mod)
+```
+
+## RF
+
+```{r}
+set.seed(100)
+#Create random forest
+rf.mod <- randomForest(popularity ~ ., data = train,
+                       mtry = 5, ntree = 501, importance = TRUE)
+
+rf.pred <- predict(rf.mod, test)
+rf.rmse <- sqrt(mean((rf.pred - test$popularity)^2))
+
+varImpPlot(rf.mod)
+```
+
+## BART
+
+```{r}
+set.seed(100)
+library(BART)
+
+bart.mod <- gbart(train[,2:16], train[,1],
+                  x.test = test[,2:16])
+bart.pred <- bart.mod$yhat.test.mean
+bart.rmse <- sqrt(mean((bart.pred - test$popularity)^2))
+```
+
+## Summary
+
+```{r}
+tree_rmses <- c(boost.rmse, baggedRF.rmse, rf.rmse, bart.rmse)
+
+tree_rmses <- as.data.frame(tree_rmses)
+
+tree_rmses <- as.data.frame(t(tree_rmses))
+
+colnames(tree_rmses) <- c("Boosted Tree", "Bagged RF", "RF", "BART")
+
+rmse.long <- tree_rmses %>%
+  pivot_longer(cols = 1:4)
+
+rmse.long$value <- round(rmse.long$value, 2)
+
+                        
+rmse.long %>%
+  ggplot(aes(x = name, y = value)) + 
+  geom_bar(stat = "identity", width = 0.40) + 
+  geom_text(aes(label = value), position = position_dodge(width = 0.90), vjust = -1,
+            cex = 2) +
+  labs(title = "MSE Performance Across Models",
+       subtitle = "Lower MSE Corresponds To Better Performance",
+       x = "Model",  y = "MSE") +
+  theme_bw() +
+  theme(axis.text.x = element_text(size = 7),
+        plot.subtitle = element_text(face = "italic"),
+        plot.title = element_text(face = "bold")) ##As expected, RF does best for prediction
+```
+
+## Variable Importance
+
+```{r}
+#Get variable importance from the model fit
+ImpData <- as.data.frame(importance(rf.mod))
+ImpData$Var.Names <- row.names(ImpData)
+
+ImpData %>%
+  arrange(`%IncMSE`) %>%
+  mutate(Name = factor(Var.Names, levels = Var.Names)) %>%
+  ggplot(aes(x = Name, y = `%IncMSE`)) + 
+  geom_segment(aes(x = Name, xend = Name, y = 0, yend = `%IncMSE`),color="light blue") +
+  geom_point(aes(size = IncNodePurity), color = "#061A40", alpha = 0.8) + 
+  labs(title = "Random Forest Variable Importance",
+       subtitle = "Percent Increase MSE and Increase in Node Purity") + 
+  theme_light() + 
+  coord_flip() + 
+  theme(
+    legend.position = "bottom",
+    panel.grid.major.y = element_blank(),
+    panel.border = element_blank(),
+    axis.ticks.y = element_blank(),
+    plot.title = element_text(face = "bold"),
+    plot.subtitle = element_text(face = "italic")
+  )
+```
+
+## Tune RF using GridSearch
+
+```{r}
+#Grid search to tune mtry:
+
+#Load caret library
+library(caret)
+
+#Set control procedure
+control <- trainControl(method="repeatedcv", number=5, 
+                        repeats=2, search="grid")
+
+#Set seed, define grid, and generate models for grid of mtry values
+set.seed(100)
+tunegrid <- expand.grid(.mtry=seq(1,15,1))
+rf_gridsearch <- train(popularity~., data=train, method="rf", 
+                       metric="RMSE", tuneGrid=tunegrid, 
+                       trControl=control)
+
+#Display grid search results -- mtry = 12 minimizes RMSE
+print(rf_gridsearch)
+
+#Create tuned RF
+set.seed(100)
+tunedrf.mod <- randomForest(popularity~., data=train, 
+                           ntree=501, mtry=12, importance = TRUE)
+
+tunedrf.pred <- predict(tunedrf.mod, test)
+tunedrf.rmse <- sqrt(mean((tunedrf.pred - test$popularity)^2))
+
+#Variable importance
+TunedImpData <- as.data.frame(importance(tunedrf.mod))
+TunedImpData$Var.Names <- row.names(TunedImpData)
+
+TunedImpData %>%
+  arrange(`%IncMSE`) %>%
+  mutate(Name = factor(Var.Names, levels = Var.Names)) %>%
+  ggplot(aes(x = Name, y = `%IncMSE`)) + 
+  geom_segment(aes(x = Name, xend = Name, y = 0, yend = `%IncMSE`),color="light blue") +
+  geom_point(aes(size = IncNodePurity), color = "#061A40", alpha = 0.8) + 
+  labs(title = "Tuned Random Forest Variable Importance",
+       subtitle = "Percent Increase MSE and Increase in Node Purity") + 
+  theme_light() + 
+  coord_flip() + 
+  theme(
+    legend.position = "bottom",
+    panel.grid.major.y = element_blank(),
+    panel.border = element_blank(),
+    axis.ticks.y = element_blank(),
+    plot.title = element_text(face = "bold"),
+    plot.subtitle = element_text(face = "italic")
+  )
+```

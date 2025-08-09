@@ -1,0 +1,188 @@
+---
+title: "Linear Models"
+author: "Rohan Krishnan"
+date: "2024-05-07"
+output: html_document
+---
+
+# Basic Model
+
+## Multiple Linear Regression
+
+```{r}
+#Libraries
+library(tidyverse)
+
+#Load data
+train <- read.csv("~/Documents/GitHub/song-popularity/data/pre_proc_train.csv")
+test <- read.csv("~/Documents/GitHub/song-popularity/data/pre_proc_test.csv")
+
+#Convert explicit, key, time_signature, and track_genre to factor variables
+train <- train %>%
+  mutate(explicit = as.factor(explicit),
+         key = as.factor(key),
+         time_signature = as.factor(time_signature),
+         track_genre = as.factor(track_genre))
+
+test <- test %>%
+    mutate(explicit = as.factor(explicit),
+         key = as.factor(key),
+         time_signature = as.factor(time_signature),
+         track_genre = as.factor(track_genre))
+
+#Run basic MLR
+mlr.mod <- lm(popularity ~ ., data = train)
+
+#Calculate RMSE
+mlr.pred <- predict(mlr.mod, test)
+mlr.rmse <- sqrt(mean((test$popularity - mlr.pred)^2)); mlr.rmse
+```
+
+# Linear Model Selection Procedures
+
+## Best Subset Selection
+
+```{r}
+set.seed(100)
+
+#Load libraries
+library(leaps)
+
+#Run best subset selection, calculate MSEs and plot
+bss.mod <- regsubsets(popularity ~., data = train, nvmax = ncol(train))
+bss.mse <- summary(bss.mod)$rss / nrow(train)
+plot(bss.mse, ylab = "MSE", type = "o")
+
+predict.regsubsets <- function(object, newdata, id, ...){
+  form <- as.formula(object$call[[2]])
+  mat <- model.matrix(form, newdata)
+  coefi <- coef(object, id = id)
+  xvars <- names(coefi)
+  mat[,xvars] %*% coefi
+}
+
+#Calculate and graph test MSEs
+testbss.mse <- sapply(1:16, function(i) mean((test$popularity - predict.regsubsets(bss.mod, test, i))^2))
+plot(testbss.mse, ylab = "MSE", type = "o", pch = 19)
+
+#Recover optimal number of coefficients
+which.min(testbss.mse)
+coef(bss.mod, id = 1) #Binary variable indicating whether song is a pop song or not is most useful
+
+unique(train$track_genre)
+
+#Create binary variable for pop in both train and test sets
+train.bss <- train %>%
+  mutate(track_genre_pop = ifelse(train$track_genre == "pop", 1, 0))
+
+test.bss <- test %>%
+  mutate(track_genre_pop = ifelse(test$track_genre == "pop", 1, 0))
+
+#Train bss selected model
+bss.mlr.mod <- lm(popularity ~ track_genre_pop, data = train.bss)
+
+#Calculate RMSE on test set
+bss.mlr.pred <- predict(bss.mlr.mod, test.bss)
+bss.mlr.rmse <- sqrt(mean((test.bss$popularity - bss.mlr.pred)^2)); bss.mlr.rmse
+```
+
+## Lasso Regression
+
+```{r}
+set.seed(100)
+
+#Load library
+library(glmnet)
+#Create x and y training/testing objects
+x.train <- model.matrix(popularity ~ ., train)[,-1]
+y.train <- train %>%
+select(popularity) %>%
+unlist() %>%
+as.numeric()
+
+x.test <- model.matrix(popularity ~ ., test)[,-1]
+y.test <- test %>%
+select(popularity) %>%
+unlist() %>%
+as.numeric()
+
+#Fit lasso CV regression on training data and recover optimal lambda
+lasso.mod <- cv.glmnet(x.train, y.train, alpha = 1)
+
+
+best.lambda <- lasso.mod$lambda.min; best.lambda
+
+
+#Report test error
+lasso.pred <- predict(lasso.mod, s = best.lambda, newx = x.test)
+lasso.rmse <- sqrt(mean((lasso.pred - y.test)^2))
+
+coef(lasso.mod, s = best.lambda)
+
+#Recover chosen variables and create new train set
+tmp_coef = coef(lasso.mod, s=best.lambda)
+
+varnames <- tmp_coef@Dimnames[[1]][tmp_coef@i][-1]; varnames
+
+varnames <- c("duration_ms", "explicit", "danceability", "energy", "key", "loudness",
+              "mode", "liveness", "valence", "time_signature")
+
+new.train <- train[,varnames]
+new.train$popularity <- train$popularity
+
+#Fit after Lasso OLS model
+afterLassoOLS.mod <- lm(popularity ~ ., new.train)
+
+#Record test error
+aLassoOLS.pred <- predict(afterLassoOLS.mod, test)
+aLassoOLS.rmse <- sqrt(mean((aLassoOLS.pred - test$popularity)^2)); aLassoOLS.rmse
+```
+
+## Ridge Regression
+
+```{r}
+set.seed(100)
+#Create ridge regression (using x/y train/test from above)
+ridge.mod <- cv.glmnet(x.train, y.train, alpha = 0)
+best.lambda <- ridge.mod$lambda.min; best.lambda
+
+#Calculate test MSE
+ridge.pred <- predict(ridge.mod, s = best.lambda, newx = x.test)
+ridge.rmse <- sqrt(mean((ridge.pred - y.test)^2))
+
+
+best.ridge <- glmnet(x.train, y.train, alpha = 0, lambda = best.lambda)
+coef(best.ridge)
+```
+
+## Summary
+
+```{r}
+lin_rmses <- c(mlr.rmse, bss.mlr.rmse, lasso.rmse, aLassoOLS.rmse, ridge.rmse)
+
+lin_rmses <- as.data.frame(lin_rmses)
+
+lin_rmses <- as.data.frame(t(lin_rmses))
+
+colnames(lin_rmses) <- c("MLR", "BSS", "Lasso", 
+                   "After Lasso OLS", "Ridge")
+
+rmse.long <- lin_rmses %>%
+  pivot_longer(cols = 1:5)
+
+rmse.long$value <- round(rmse.long$value, 2)
+
+                        
+rmse.long %>%
+  ggplot(aes(x = name, y = value)) + 
+  geom_bar(stat = "identity", width = 0.40) + 
+  geom_text(aes(label = value), position = position_dodge(width = 0.90), vjust = -1,
+            cex = 2) +
+  labs(title = "MSE Performance Across Models",
+       subtitle = "Lower MSE Corresponds To Better Performance",
+       x = "Model",  y = "MSE") +
+  theme_bw() +
+  theme(axis.text.x = element_text(size = 7),
+        plot.subtitle = element_text(face = "italic"),
+        plot.title = element_text(face = "bold"))
+```
